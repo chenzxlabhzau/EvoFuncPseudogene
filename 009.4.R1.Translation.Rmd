@@ -1,0 +1,49 @@
+---
+title: "009.4.R1.Translation"
+author: "qians"
+date: "2022年2月24日"
+output: html_document
+---
+
+```{bash}
+cd /NAS/qians/Pseudogene/Data
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR180/006/SRR1802136/SRR1802136.fastq.gz
+gunzip SRR1802136.fastq.gz
+fastp -i SRR1802136.fastq -o SRR1802136.fastp.fastq --thread 8
+
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR837/SRR837789/SRR837789.fastq.gz
+gunzip SRR1802136.fastq.gz
+for i in `ls *fastq`; do echo $i processed; fastp -i $i -o ${i%fastq}trim.fastq --thread 8; done
+
+# map to tsRNA
+## genome build
+cat so_rna_type_namerRNA_AND_TAXONOMY9606_AND_rna_typerRNA_AND_entry_typeSequence.fasta tRNA_AND_so_rna_type_nameTRNA_AND_TAXONOMY9606_AND_rna_typetRNA_AND_entry_typeSequence.fasta > trRNA.fasta
+bowtie2-build trRNA.fasta trRNA
+## map
+for i in `ls *trim.fastq`; do echo $i processed; bowtie2 -x ~/Pseudo/Data/Ref/Human/trRNA/trRNA -p 10 -U /NAS/qians/Pseudogene/Data/$i -S /NAS/qians/Pseudogene/Data/${i%fastq}sam --un-gz /NAS/qians/Pseudogene/Data/${i%fastq}tsRNAunaligned.fastq.gz; done
+
+# map to genome
+cd ~/Pseudo/Data/Ref/Human/bowtie2.index
+#bowtie2-build Homo_sapiens.GRCh38.dna.primary_assembly.fa hg38
+cd /NAS/qians/Pseudogene/Data
+for i in `ls *.trim.tsRNAunaligned.fastq.gz`; do echo $i processed; bowtie2 -x ~/Pseudo/Data/Ref/Human/bowtie2.index/hg38 -p 10 -U /NAS/qians/Pseudogene/Data/$i -S /NAS/qians/Pseudogene/Data/${i%fastq.gz}Genomealigned.sam; done 
+
+#sam to bam
+for i in `ls *trim.tsRNAunaligned.Genomealigned.sam`; do echo $i processed; samtools view -Sb $i -q 20 -@ 10 | samtools sort -@ 10 -o ${i%sam}bam; done
+for i in `ls *trim.tsRNAunaligned.Genomealigned.bam`; do echo $i processed; samtools index $i; done
+
+#bam to bw
+cd /NAS/qians/Pseudogene/Data
+for i in `ls *bam`; do bamCoverage -b $i -bs 10 -p 10 --normalizeUsing RPKM -o ${i%bam}bw; done
+
+```
+
+# choose example
+```{r}
+S = "Human"
+a = fread(file.path("~/Pseudo/Data/Seqdata/RPFdb",S,paste0(S,".all.RPKM.txt"))) %>% as.data.frame()
+tmp = a[a$type!="Coding" & a$type!="lncRNA",c("Gene_ID","SRX273671","type")]
+b = fread(file.path("~/Pseudo/Data/Ref",S,"gene.ENSG.name.2.txt"),header = FALSE) %>% as.data.frame()
+tmp$type2 = b[match(tmp$Gene_ID,b$V1),2]
+```
+

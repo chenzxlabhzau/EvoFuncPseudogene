@@ -1,0 +1,295 @@
+---
+title: "009.3.CodingPotential.Rmd"
+author: "qians"
+date: "2021年3月10日"
+output: html_document
+---
+
+# For human & mouse
+```{bash}
+# For human
+cd ~/Pseudo/Result/RPFdb/Human/Savedata
+# Extract transcript sequence (in .fa format)
+/home/qian/source/cufflinks-2.2.1.Linux_x86_64/gffread -w Human.transcript.fa -g ~/Pseudo/Data/Ref/Human/Homo_sapiens.GRCh38.dna.primary_assembly.fa ~/Pseudo/Data/Ref/Human/Homo_sapiens.GRCh38.98.gtf
+sed -i 's/ gene/gene/g' Human.transcript.fa
+
+# CPC2
+cd ~/Pseudo/Result/RPFdb/Human/Savedata
+nohup ~/Biosoft/Python-2.7.10/python ~/Biosoft/CPC2-beta/bin/CPC2.py -i Human.transcript.fa --ORF -o Human.transcript.CPC2 &
+# CPAT
+cd ~/Pseudo/Result/RPFdb/Human/Savedata
+~/Biosoft/Python-2.7.10/python ~/Biosoft/CPAT-1.2.4/bin/cpat.py -g Human.transcript.fa -d Human_logitModel.RData -x Human_Hexamer.tsv -o Human.transcript.CPAT.txt
+
+# For mouse
+#cd ~/Pseudo/Data/Ref/Mouse
+#grep -w transcript Mus_musculus.GRCm38.98.gtf |awk -F ";" '{print $1"\t"$3"\t"$5}' | sed 's/transcript_id//g' | sed 's/gene_name//g' | sed 's/"//g' | sed 's/ //g' |awk -F "\t" '{print $1"\t"$4"\t"$5"\t"$10"gene="$11"\t"$13"\t"$7"\t"$7}' > Mouse.transcript.bed
+#bedtools getfasta -fi Mus_musculus.GRCm38.dna.primary_assembly.fa -bed Mouse.transcript.bed -s -fo ~/Pseudo/Result/RPFdb/Mouse/Savedata/Mouse.transcript.fa
+cd ~/Pseudo/Result/RPFdb/Mouse/Savedata
+/home/qian/source/cufflinks-2.2.1.Linux_x86_64/gffread -w Mouse.transcript.fa -g ~/Pseudo/Data/Ref/Mouse/Mus_musculus.GRCm38.dna.primary_assembly.fa ~/Pseudo/Data/Ref/Mouse/Mus_musculus.GRCm38.98.gtf
+sed -i 's/ gene/gene/g' Mouse.transcript.fa
+
+# CPC2
+cd ~/Pseudo/Result/RPFdb/Mouse/Savedata
+nohup ~/Biosoft/Python-2.7.10/python ~/Biosoft/CPC2-beta/bin/CPC2.py -i Mouse.transcript.fa --ORF -o Mouse.transcript.CPC2 &
+# CPAT
+cd ~/Pseudo/Result/RPFdb/Mouse/Savedata
+wget https://sourceforge.net/projects/rna-cpat/files/v1.2.2/prebuilt_model/Mouse_Hexamer.tsv/download
+~/Biosoft/Python-2.7.10/python ~/Biosoft/CPAT-1.2.4/bin/cpat.py -g Mouse.transcript.fa -d Mouse_logitModel.RData -x Mouse_Hexamer.tsv -o Mouse.transcript.CPAT.txt
+
+cd ~/Pseudo/Data/Ref/Mouse
+grep -w gene Mus_musculus.GRCm38.98.gtf |awk -F ";" '{print $1"\t"$3"\t"$5}' > gene.ENSG.name.txt
+
+```
+
+```{r}
+rm(list = ls());gc();rm(list = ls())
+Num = "009.3."
+
+for ( species in c("Human","Mouse")) {
+  if (species == "Human") {
+    cpat.cutoff = 0.364
+    }else {
+      cpat.cutoff = 0.44
+      }
+  
+  cpc = fread(paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".transcript.CPC2.txt")) %>% as.data.frame()
+  cpc$`#ID` %<>% toupper
+  cpat = fread(paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".transcript.CPAT.txt")) %>% as.data.frame()
+  cpat$cpc2label = cpc[match(cpat$V1,cpc$`#ID`),"label"]
+  cpat$gene = lapply(cpat$V1,function(x)strsplit(x,split = "GENE=",fixed = TRUE)[[1]][2]) %>% unlist()
+  temp = cpat
+  
+  b = read.csv(file.path("/home/qians/Pseudo/Data/Ref",species,"/gene.ENSG.name.txt"),
+                header = FALSE,sep = "\t",stringsAsFactors = F)
+  b$V10 %<>% gsub("gene_name ","",.) %>% gsub(" ","",.) %>% toupper()
+  b$V11 %<>% gsub("gene_biotype ","",.) %>% gsub(" ","",.)
+  b[grepl("pseudogene",b$V11),"V11"]="pseudogene"
+  b %<>% dplyr::filter(.,grepl("protein_coding|lncRNA|pseudogene",V11,ignore.case = T))
+  cpat$type = b[match(cpat$gene,b$V10),"V11"]
+  cpat %<>% na.omit() %>% dplyr::filter(.,coding_prob >= cpat.cutoff & cpc2label ==   "coding") %>%
+    dplyr::distinct(.,gene,type)
+  c = as.data.frame(table(cpat$type)/table(b$V11))
+  colnames(c)[2] = "Coding"
+  c$Noncoding = 1-c$Coding
+  c %<>% pivot_longer(.,cols=2:3)
+  c$Var1 %<>% gsub("lncRNA","LncRNA",.) %>% gsub("protein_coding","Protein coding",.)   %>% 
+    gsub("pseudogene","Pseudogene",.) %>% factor(.,levels = c("Protein coding","Pseudogene","LncRNA"))
+  c$name %<>% factor(.,levels = c("Coding","Noncoding"))
+#c$Var1 %<>% factor(.,levels = )
+  p1 = ggplot(c, aes(x = 1, y = value, fill = name)) +
+    geom_bar(stat = "identity", width = 1) +    
+    coord_polar(theta = "y")+facet_grid(.~Var1)+theme_classic()+
+    theme(axis.title.x = element_blank(),axis.text.x = element_blank(),
+          axis.title.y = element_blank(),axis.text.y = element_blank(),
+          axis.line.x = element_blank(), axis.line.y = element_blank(),
+          axis.ticks = element_blank(),
+          strip.text.x = element_text(size = 12),strip.text.y = element_text(size = 12,angle=0),
+          strip.background = element_blank(),strip.text.y.left = element_text(angle = 0),
+          legend.position = "bottom",legend.direction = "horizontal",legend.title = element_blank())+
+    geom_text(aes(label = round(value*100,2)), position = position_stack(vjust = 0.5))+
+  #scale_fill_manual(values =c("#296E7B","#49a88f"))
+  scale_fill_manual(values =c("#49a88f","#aadde0"))
+  ggsave(p1,filename =
+           paste0("~/Pseudo/Result/RPFdb/",species,"/Picture/",Num,species,".Translated.type.pdf"),
+         device = "pdf",width = 6, height = 4)
+  
+  
+## gene type 
+  b = read.csv(file.path("/home/qians/Pseudo/Data/Ref",species,"/gene.ENSG.name.txt"),
+                header = FALSE,sep = "\t",stringsAsFactors = F)
+  b$V10 %<>% gsub("gene_name ","",.) %>% gsub(" ","",.) %>% toupper()
+  b$V11 %<>% gsub("gene_biotype ","",.) %>% gsub(" ","",.)
+  b = b[grepl("pseudo",b$V11),]
+  temp$type = b[match(temp$gene,b$V10),"V11"]
+  temp %<>% na.omit() %>% dplyr::filter(.,coding_prob >= cpat.cutoff & cpc2label ==   "coding") %>%
+    dplyr::distinct(.,gene,type)
+  temp$type %<>% gsub("transcribed_","",.) %>% gsub("translated_","",.) %>%
+    gsub(" ","",.) %>%
+    gsub("unitary_pseudogene","Unitary",.) %>% 
+    gsub("polymorphic_pseudogene","Polymorphic",.) %>% 
+    gsub("processed_pseudogene","Processed",.)
+  temp[!temp$type %in% c("Unitary","Polymorphic","Processed"),"type"]="Unprocessed"
+  print(species);print(table(temp$type))
+}
+```
+## add RPFdb
+```{r}
+rm(list = ls());gc();rm(list = ls())
+Num = "009.3."
+for ( species in c("Human","Mouse")) {
+
+rpf = fread(file.path("~/Pseudo/Data/Seqdata/RPFdb",species,paste0(species,".all.RPKM.txt"))) %>% as.data.frame()
+rpf[grepl("pseudogene",rpf$type),"type"]="Pseudogene"
+rpf = rpf[apply(rpf[,-c(1,ncol(rpf))],1,max)>1,]
+
+if (species == "Human") {
+    cpat.cutoff = 0.364
+    }else {
+      cpat.cutoff = 0.44
+      }
+  
+  cpc = fread(paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".transcript.CPC2.txt")) %>% as.data.frame()
+  cpc$`#ID` %<>% toupper
+  cpat = fread(paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".transcript.CPAT.txt")) %>% as.data.frame()
+  cpat$cpc2label = cpc[match(cpat$V1,cpc$`#ID`),"label"]
+  cpat$gene = lapply(cpat$V1,function(x)strsplit(x,split = "GENE=",fixed = TRUE)[[1]][2]) %>% unlist()
+  
+  b = read.csv(file.path("/home/qians/Pseudo/Data/Ref",species,"/gene.ENSG.name.txt"),
+                header = FALSE,sep = "\t",stringsAsFactors = F)
+  b$V10 %<>% gsub("gene_name ","",.) %>% gsub(" ","",.) %>% toupper()
+  b$V11 %<>% gsub("gene_biotype ","",.) %>% gsub(" ","",.)
+  b[grepl("pseudogene",b$V11),"V11"]="pseudogene"
+  b %<>% dplyr::filter(.,grepl("protein_coding|lncRNA|pseudogene",V11,ignore.case = T))
+  cpat$type = b[match(cpat$gene,b$V10),"V11"]
+  cpat %<>% na.omit() %>% dplyr::filter(.,coding_prob >= cpat.cutoff & cpc2label ==   "coding") %>%
+    dplyr::distinct(.,gene,type)
+
+cpat$ENS = b[match(cpat$gene,b$V10),"V9"] %>% gsub("gene_id ","",.)
+
+cpat$type = b[match(cpat$gene,b$V10),"V11"]
+write.table(cpat[cpat$ENS %in% rpf$Gene_ID,],
+            file = paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".translated.validated.csv"),
+            col.names = FALSE,row.names = FALSE,sep = "\t",quote = FALSE)
+
+
+freq = as.data.frame(table(cpat[cpat$ENS %in% rpf$Gene_ID,"type"])/table(cpat$type))
+#freq$Freq2 = 1-freq$Freq
+#freq %<>% pivot_longer(.,cols=2:3)
+freq$Freq = freq$Freq * 100
+freq$Var1 %<>% gsub("lncRNA","LncRNA",.) %>% 
+  gsub("protein_coding","Protein coding",.) %>% 
+  gsub("pseudogene","Pseudogene",.) %>% 
+  factor(.,levels = c("Protein coding","Pseudogene","LncRNA"))
+
+freq$group = "A"
+p2 = ggplot(freq,aes(group,Freq))+geom_bar(stat = "identity",position = "stack",fill="#49a88f")+
+    theme_classic()+coord_flip(ylim = c(0,100))+
+    scale_y_continuous(expand = c(0,0),limits = c(0,100))+
+    ylab("% Validated by Ribo-seq")+
+    theme(strip.background  = element_blank(),strip.text = element_text(size = 12),
+          axis.text.x = element_text(size=12,angle = 45,hjust = 1,vjust = 1),axis.title.x = element_text(size=14),
+          axis.text.y = element_blank(),axis.title.y = element_blank(),axis.ticks.y = element_blank())+
+    geom_text(aes(label=round(Freq,1)), stat='identity')+facet_wrap(.~Var1)
+ggsave(p2,filename = paste0("~/Pseudo/Result/RPFdb/",species,"/Picture/",Num,species,".ValidatedbyRiboseq.type.pdf"),
+         device = "pdf",width = 6, height = 1.5)
+
+}
+p2 = ggplot(freq[2,],aes(Var1,Freq))+geom_bar(stat = "identity",position = "stack")+
+    theme_classic()+coord_flip(ylim = c(0,100))+
+    scale_y_continuous(expand = c(0,0),limits = c(0,100))+
+    #ylab("% Validated by Ribo-seq")+
+    theme(axis.text.x = element_text(size=12),axis.title.x = element_blank(),
+          axis.text.y = element_text(size=12),axis.title.y = element_blank())+
+    geom_text(aes(label=round(Freq,1)), stat='identity')+
+  
+  ggplot(freq[3,],aes(Var1,Freq))+geom_bar(stat = "identity",position = "stack")+
+  theme_classic()+coord_flip(ylim = c(0,100))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,100))+
+  ylab("% Validated by Ribo-seq")+
+  theme(axis.text.x = element_text(size=12),axis.title.x = element_text(size=14),
+          axis.text.y = element_text(size=12),axis.title.y = element_blank())+
+  geom_text(aes(label=round(Freq,1)), stat='identity')+
+  
+  ggplot(freq[1,],aes(Var1,Freq))+geom_bar(stat = "identity",position = "stack")+
+  theme_classic()+coord_flip(ylim = c(0,100))+
+  scale_y_continuous(expand = c(0,0),limits = c(0,100))+
+  ylab("% Validated by Ribo-seq")+
+  theme(axis.text.x = element_text(size=12),axis.title.x = element_text(size=14),
+          axis.text.y = element_text(size=12),axis.title.y = element_blank())+
+  geom_text(aes(label=round(Freq,1)), stat='identity')
+
+
+# Revise 1 
+for ( species in c("Human","Mouse")) {
+  a = fread(paste0("~/Pseudo/Result/RPFdb/",species,"/Savedata/",species,".translated.validated.csv"),
+            header = FALSE) %>% as.data.frame()
+  b <- read.csv(file.path("/home/qians/Pseudo/Data/Ref",species,paste0("gene",species,".bed")),
+                               header = FALSE,sep = "\t",stringsAsFactors = F)
+  b = b[grepl("pseudo",b$V5),]
+  a$type = b[match(a$V3,b$V4),5]
+  a %<>% na.omit()
+  a$type %<>% gsub("transcribed_","",.) %>% gsub("translated_","",.) %>%
+    gsub(" ","",.) %>%
+    gsub("unitary_pseudogene","Unitary",.) %>% 
+    gsub("polymorphic_pseudogene","Polymorphic",.) %>% 
+    gsub("processed_pseudogene","Processed",.)
+  a[!a$type %in% c("Unitary","Polymorphic","Processed"),"type"]="Unprocessed"
+  print(c(nrow(a),species))
+  print(table(a$type))
+}
+```
+
+## add age
+```{r}
+rm(list = ls());gc();rm(list = ls())
+species = "Human"
+Num = "009.3."
+age = read.csv(paste0("/home/qians/Pseudo/Result/",species,"/Savedata/",species,".gene.age.csv"),
+                 header = TRUE,sep = ",",stringsAsFactors = FALSE)
+age$ribo = 0
+cpat = fread(file = "~/Pseudo/Result/RPFdb/Human/Savedata/Human.translated.validated.csv",header = FALSE) %>% as.data.frame()
+colnames(cpat) = c("gene","type","ENS")
+age[age[,1] %in% cpat$ENS, "ribo"] = 1
+#age[age[,1] %in% cpat[cpat$ENS %in% rpf$Gene_ID,"ENS"], "ribo"] = 1
+
+df = as.data.frame(table(age$ribo,age$age)[2,]/table(age$age),stringsAsFactors=FALSE)
+df$Var1 %<>% as.numeric()
+df$species = species
+cor = cor.test(df$Var1,df$Freq,method = "spearman")
+text = c(text, paste0("rho= ",round(cor$estimate,2),",","\n","P= ",round(cor$p.value,2)))
+p3 = ggplot(df,aes(Var1,Freq*100))+geom_point()+geom_smooth(method = "lm",se = FALSE)+
+  xlab("Millon year")+ ylab("Fraction of translated pseudogenes")+theme_bw()+
+  theme(panel.grid.major =element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(),
+        axis.title.x=element_text(size=12),
+        axis.text.x = element_text(size=10),
+        axis.title.y=element_text(size=12),
+        axis.text.y = element_text(size=10),
+        strip.text = element_text(size=12))+
+  annotate(geom="text", x=-350, y=20, size=4,
+             label=paste0("rho=",round(cor$estimate,2),",","\n","P=",round(cor$p.value,3)))
+ggsave(p3,filename = paste0("/home/qians/Pseudo/Result/Human/Picture/",Num,"Human.ValidatedbyRiboseq.age.pdf"),
+       width = 3.2,height = 4.2)
+
+
+pseu = fread("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.pseudogene.exon.unique.phastcons.30way.bed") %>% as.data.frame()
+pseu$V1 %<>% lapply(.,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+pseu = tapply(pseu$V6, pseu$V1, max) %>% as.data.frame()
+age$conserve = pseu[match(age$Human,row.names(pseu)),1]
+cor.test(with(age[age$ribo==1,],tapply(conserve,age,median)),1:10,method = "spearman")
+```
+
+## add expression
+```{r}
+express = fread(file.path("~/Pseudo/Result",species,"Savedata","gene.expressnum.0.3allfpkm.csv")) %>% as.data.frame()
+age$expressed = express[match(age[,1],express$gene),2]
+age[is.na(age)]=0
+age[age[,1] %in% express$gene, "expressed"] = 1
+```
+
+## sankey test
+```{r}
+data <- data.frame(
+  x = c(1, 2, 2, 1, 2, 3, 3, 2),
+  y = c(1, 2, 3, 2, 3, 1, 2, 5),
+  group = c(1, 1, 1, 1, 2, 2, 2, 2)
+)
+
+ggplot(data) +
+  geom_diagonal_wide(aes(x, y, group = group))
+
+data <- data.frame(
+  x = c(1, 1.25, 1.25, 1, 1, 1.25, 1.25, 1, 1, 1.25, 1.25, 1),
+  y = c(0, 0.47, 0.53, 1, 1.5, 1.9, 2.1, 2.5, 3, 3.03, 3.97, 4),
+  group = c(1, 1, 1, 1, 2, 2, 2, 2,3,3,3,3)
+)
+
+ggplot(data) +
+  geom_diagonal_wide(aes(x, y, group = group))+
+  coord_cartesian(xlim = c(1,3))
+```
+
+## Conservation
+S007.1
+
+
+## Cancer 
