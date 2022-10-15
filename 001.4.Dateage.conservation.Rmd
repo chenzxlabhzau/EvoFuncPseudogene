@@ -1,0 +1,125 @@
+---
+title: "001.4.Dateage.conservation.R"
+author: "qians"
+date: "2021"
+output: html_document
+---
+
+## download phastcons data
+```{bash}
+cd /opt/qians/Pseudogene/Data/UCSC.phastcons/Human
+wget -c http://hgdownload.soe.ucsc.edu/goldenPath/hg38/phastCons30way/hg38.phastCons30way.bw
+
+grep -w exon ~/Pseudo/Data/Ref/Human/Homo_sapiens.GRCh38.98.gtf|awk -F ";" '{print $1}' | sed 's/gene_id //g' | sed 's/"//g' | awk -F "\t" '{print $9"chr"$1"\t"$4"\t"$5}' | bedtools sort -i -| bedtools merge -i - | awk -F "chr" '{print "chr"$2"\t"$1"."NR}' > gene.exon.bed
+
+
+#for pseudo exon
+sort -k1,1 -k2,2n ~/Pseudo/Data/Ref/Human/Human.pseudogene.exon.bed | sed 's/^/chr/g' | uniq > Human.pseudogene.exon.unique.bed
+/home/qian/source/bigWigAverageOverBed hg38.phastCons30way.bw Human.pseudogene.exon.unique.bed Human.pseudogene.exon.unique.phastcons.30way.bed
+#for coding CDS, 3' UTR, 5' UTR
+cd ~/Pseudo/Data/Ref/Human
+for i in five_prime_utr three_prime_utr CDS; do grep protein_coding Homo_sapiens.GRCh38.98.gtf | grep -w $i |awk -F ";" '{print $1"\t"$8"\t"$12}' | sed 's/gene_id //g'|sed 's/gene_biotype //g'| sed 's/"//g'  | awk -F "\t" '{print $1"\t"$4"\t"$5"\t"$9":"NR}'  | sed 's/ //g' > ~/Pseudo/Data/Ref/Human/Human.coding.$i.bed; done
+cd /opt/qians/Pseudogene/Data/UCSC.phastcons/Human
+for i in five_prime_utr three_prime_utr CDS; do sort -k1,1 -k2,2n ~/Pseudo/Data/Ref/Human/Human.coding.$i.bed | sed 's/^/chr/g' | uniq > Human.coding.$i.unique.bed; done
+for i in five_prime_utr three_prime_utr CDS; do /home/qian/source/bigWigAverageOverBed hg38.phastCons30way.bw Human.coding.$i.unique.bed Human.coding.$i.unique.phastcons.30way.bed; done
+
+cd ~/Pseudo/Data/Ref/Human
+bedtools shuffle -i Human.pseudogene.exon.bed -excl geneHuman.bed -g Human.length -seed 100 > Human.intergenic.frompseudo.seed100.bed
+cd /opt/qians/Pseudogene/Data/UCSC.phastcons/Human
+sort -k1,1 -k2,2n ~/Pseudo/Data/Ref/Human/Human.intergenic.frompseudo.seed100.bed | sed 's/^/chr/g' | uniq | awk -F "\t" '{print $0NR}' > Human.intergenic.frompseudo.unique.seed100.bed
+/home/qian/source/bigWigAverageOverBed hg38.phastCons30way.bw Human.intergenic.frompseudo.unique.seed100.bed Human.intergenic.frompseudo.unique.seed100.phastcons.30way.bed
+```
+
+```{r}
+if (TRUE) {
+  rm(list = ls());gc();rm(list = ls())
+  Num = "001.4."
+  pseu = fread("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.pseudogene.exon.unique.phastcons.30way.bed") %>% as.data.frame()
+  pseu$V1 %<>% lapply(.,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+  pseu = tapply(pseu$V6, pseu$V1, max) %>% as.data.frame()
+  species = "Human"
+  age = read.csv(paste0("/home/qians/Pseudo/Result/",species,"/Savedata/",species,".gene.age.csv"),header   =TRUE,sep = ",",stringsAsFactors = FALSE)
+  pseu$age = age[match(row.names(pseu),age[,1]),"age"]
+  pseu %<>% na.omit()
+  ggplot(pseu,aes(age,.))+geom_boxplot(aes(group=age))
+  
+  cons = c()
+  for (type in c("five_prime_utr","three_prime_utr","CDS")) {
+  data = fread(paste0("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.coding.",type,".unique.phastcons.30way.bed")) %>% as.data.frame()
+  
+  data$V1 %<>% lapply(.,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+  data = tapply(data$V6, data$V1, max) %>% as.data.frame()
+  data$age = type
+  cons = rbind(cons,data)
+  }
+  
+  inter = fread("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.intergenic.frompseudo.unique.seed100.phastcons.30way.bed") %>% as.data.frame()
+  inter$V1 %<>% lapply(.,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+  inter = tapply(inter$V6, inter$V1, max) %>% as.data.frame()
+  inter$age = "Intergenic"
+  
+  cons %<>% rbind(.,pseu,inter) %>% na.omit
+cons$age %<>% gsub("five_prime_utr","UTR",.) %>% gsub("three_prime_utr","UTR",.) %>% 
+  factor(.,levels = c("Intergenic",sort(unique(pseu$age),decreasing = FALSE),"CDS","UTR"),
+         labels = c("Intergenic",round(sort(unique(pseu$age),decreasing = FALSE),0),"CDS","UTR"))
+
+p1 = ggplot(cons,aes(age,.,fill=age))+geom_boxplot(notch = TRUE,outlier.colour = "white")+theme_bw()+
+    xlab("Pseudogene age (Myr)")+ylab("Conservation score")+
+    theme(panel.grid.major =element_blank(), 
+          panel.grid.minor = element_blank(),
+          axis.text.x = element_text(size=10,angle = 45,hjust = 1,vjust = 1),axis.title.x = element_text(size=12),
+          axis.text.y = element_text(size=10),axis.title.y = element_text(size=12))+
+    geom_vline(xintercept = 11.5,linetype="dashed")+geom_vline(xintercept = 1.5,linetype="dashed")+
+    #geom_hline(yintercept = max(tapply(pseu$V5, pseu$age, median)), linetype="dashed")+
+    scale_fill_manual(values =c("#d95f0d",rep("#fc9272",10),rep("#d95f0d",2)))+
+    guides(fill=FALSE)+
+  geom_hline(yintercept = median(cons[cons$age=="Intergenic","."]),linetype="dotted",color="#d95f0d")+
+  geom_hline(yintercept = median(cons[cons$age=="UTR","."]),linetype="dotted",color="#d95f0d")
+
+ggsave(p1, filename = paste0("/home/qians/Pseudo/Result/Human/Picture/",Num,"Human.Conservation.age.pdf"),
+         device = "pdf",width = 4, height = 3)
+}
+
+if (FALSE) {
+  rm(list = ls());gc();rm(list = ls())
+Num = "001.4."
+pseu = fread("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.pseudogene.exon.unique.phastcons.30way.bed") %>% as.data.frame()
+pseu$V1 %<>% lapply(.,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+
+species = "Human"
+age = read.csv(paste0("/home/qians/Pseudo/Result/",species,"/Savedata/",species,".gene.age.csv"),header = TRUE,sep = ",",stringsAsFactors = FALSE)
+pseu$age = age[match(pseu$V1,age[,1]),"age"]
+pseu %<>% na.omit()
+
+cons = c()
+for (type in c("five_prime_utr","three_prime_utr","CDS")) {
+  data = fread(paste0("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.coding.",type,".unique.phastcons.bed")) %>% as.data.frame()
+  data$age = type
+  cons = rbind(cons,data)
+}
+
+inter = fread("/opt/qians/Pseudogene/Data/UCSC.phastcons/Human/Human.intergenic.frompseudo.unique.seed100.phastcons.bed") %>% as.data.frame()
+inter$age = "Intergenic"
+
+cons %<>% rbind(.,pseu,inter) %>% na.omit
+cons$age %<>% gsub("five_prime_utr","UTR",.) %>% gsub("three_prime_utr","UTR",.) %>% 
+  factor(.,levels = c("Intergenic",sort(unique(pseu$age),decreasing = FALSE),"CDS","UTR"),
+         labels = c("Intergenic",round(sort(unique(pseu$age),decreasing = FALSE),0),"CDS","UTR"))
+p1 = ggplot(cons,aes(age,V5,fill=age))+geom_boxplot(notch = TRUE,outlier.colour = "white")+theme_bw()+
+  xlab("Pseudogene age (Myr)")+ylab("Conservation score")+
+  theme(panel.grid.major =element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(size=10,angle = 45,hjust = 1,vjust = 1),axis.title.x = element_text(size=12),
+        axis.text.y = element_text(size=10),axis.title.y = element_text(size=12))+
+  geom_vline(xintercept = 11.5,linetype="dashed")+geom_vline(xintercept = 1.5,linetype="dashed")+
+  #geom_hline(yintercept = max(tapply(pseu$V5, pseu$age, median)), linetype="dashed")+
+  scale_fill_manual(values =c("#d95f0d",rep("#fc9272",10),rep("#d95f0d",2)))+
+  guides(fill=FALSE)+
+  geom_hline(yintercept = median(cons[cons$age=="Intergenic","V5"]),linetype="dotted",color="#d95f0d")+
+  geom_hline(yintercept = median(cons[cons$age=="UTR","V5"]),linetype="dotted",color="#d95f0d")
+ggsave(p1, filename = paste0("/home/qians/Pseudo/Result/Human/Picture/",Num,"Human.Conservation.age.pdf"),
+         device = "pdf",width = 4, height = 3)
+}
+
+```
+

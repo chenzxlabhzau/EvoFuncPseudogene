@@ -1,0 +1,156 @@
+---
+title: "002.0.rawdata.fastqbam"
+author: "qians"
+date: 
+output: html_document
+---
+
+### Developmental transcriptome reads mapping
+```{bash}
+cd /home/lchen/ddg_lncRNA/data/Mus_musculus  && STAR --runThreadN 4 --genomeDir ~/ddg_lncRNA/reference/mouse  --readFilesCommand zcat --readFilesIn ERR2588639.fastq.gz  --outSAMstrandField intronMotif --outFileNamePrefix ~/ddg_lncRNA/result/mouse/ERR2588639 && samtools view -Sb -q 30 -h -@ 4 ~/ddg_lncRNA/result/mouse/ERR2588639*sam | samtools sort -@ 4 >~/ddg_lncRNA/result/mouse/ERR2588639.bam
+
+cd /home/lchen/ddg_lncRNA/result/mouse
+for i in 0dpb 10.5 11.5 12.5 13.5 14.5 15.5 16.5 17.5 18.5 2wpb 3dpb 4wpb 9wpb ; do echo -e "cd /home/lchen/ddg_lncRNA/result/mouse; samtools merge -@ 10 ${i}.bam" > ${i}.tmp1.pbs; done
+for i in 0dpb 10.5 11.5 12.5 13.5 14.5 15.5 16.5 17.5 18.5 2wpb 3dpb 4wpb 9wpb ; do grep Mouse.Brain E-MTAB-6798.sdrf.txt | grep Mouse.Brain.$i|awk -F "\t" '{print $30".bam"}'| xargs > ${i}.tmp2.pbs; done
+for i in 0dpb 10.5 11.5 12.5 13.5 14.5 15.5 16.5 17.5 18.5 2wpb 3dpb 4wpb 9wpb; do paste ${i}.tmp1.pbs ${i}.tmp2.pbs > ${i}.merge.pbs; done
+rm *tmp?.pbs
+for i in `ls *merge.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+for i in `ls *bam| grep -v ERR`; do echo -e "cd /home/lchen/ddg_lncRNA/result/mouse; samtools index -@ 10 $i" > ${i%bam}index.pbs; done
+for i in `ls *index.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+for i in `ls *bam| grep -v ERR`; do echo -e "cd /home/lchen/ddg_lncRNA/result/mouse; bamCoverage -b $i -bs 10 -p 10 --normalizeUsing RPKM -o ${i%bam}bw" > ${i%bam}bw.pbs; done
+for i in `ls *bw.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+
+for i in `ls *bam`; do echo -e "cd /home/lchen/ddg_lncRNA/result/mouse; samtools index -@ 10 $i" > ${i%bam}index.pbs; done
+for i in `ls *index.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+for i in `ls *bam`; do echo -e "cd /home/lchen/ddg_lncRNA/result/mouse; bamCoverage -b $i -bs 10 -p 10 --normalizeUsing RPKM -o ${i%bam}bw" > ${i%bam}bw.pbs; done
+for i in `ls *bw.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+```
+
+
+### PacBio detected pseudogenes
+```{bash}
+#discarded
+#######################################################
+cd ~/Pseudo/Data/Ref/Mouse
+grep -i pseudo Mouse.gene.bed | sed 's/chr//g' | bedtools intersect -a - -b PacBio.transcript.bed -wa | sort | uniq
+grep pseu Mus_musculus.GRCm38.98.gtf | grep -w exon |awk -F ";" '{print $1"\t"$8"\t"$12}' | sed 's/gene_id //g'|sed 's/gene_biotype //g'| sed 's/exon_id //g'| sed 's/"//g' | awk -F "\t" '{print $1"\t"$4"\t"$5"\t"$9":"$11":"$5-$4"\t"$10"\t"$7}' | sed 's/ //g' > Mouse.pseudogene.exon.withstrand.bed
+
+cd ~/Pseudo/Data/Seqdata/PacBio
+PB mouse_final.gtf | grep -w exon| awk -F "\t" '{print $1"\t"$4"\t"$5"\t"$9"\t"$7"\t"$7}' | sed 's/gene_id//g' | sed 's/transcript_id//g' | sed 's/"//g' | sed 's/ //g' |  bedtools intersect -a ~/Pseudo/Data/Ref/Mouse/Mouse.pseudogene.exon.withstrand.bed -b - -s -wo | sort | uniq > mouse_pseudoExon.IsoseqExon.intersect.bed
+
+cd ~/Pseudo/Data/Seqdata/PacBio
+grep PB mouse_final.gtf | grep -w transcript | awk -F "\t" '{print $1"\t"$4"\t"$5"\t"$9"\t"$7"\t"$7}' | bedtools intersect -a ~/Pseudo/Data/Ref/Mouse/geneMouse.pseudogene.bed -b - -wa -s -f 1 | sort | uniq > mouse_pseudogene.IsoseqDetected.bed
+
+/home/qians/Pseudo/Data/Seqdata/PacBio/mouse_compare.annotated.gtf
+########################################################
+#method 1, also discarded
+grep -w transcript mouse_compare.annotated.gtf |cut -d \; -f 2,3|sed "s/gene_name //g"|sed "s/\"//g" |sed "s/ gene_id //g" |sed "s/;/\t/g" |sort -u|sed "s/ //g" |awk -F "\t" 'NR==FNR{a[$2]=$0;next}NR>FNR{if($1 in a)print a[$1]"\t"$2}' - mouse_98_biotype.txt > ~/Pseudo/Data/Seqdata/PacBio/pb_name_type_reference.txt
+
+```
+
+```{r}
+rm(list=ls());gc();rm(list = ls())
+Num = "002.0."
+#method 2
+a = fread("~/Pseudo/Data/Seqdata/PacBio/mouse_compare.annotated.gtf") %>% as.data.frame()
+a %<>% dplyr::filter(., V3 %in% "transcript")
+a$gene = lapply(as.character(a$V9),function(x)(strsplit(x,";")[[1]][3])) %>% unlist() %>%
+  gsub("gene_name ","",.) %>% gsub("\"","",.) %>% gsub(" ","",.)
+gene = as.data.frame(unique(a$gene))
+colnames(gene) = "name"
+
+S = "Mouse"
+b = read.csv(file.path("~/Pseudo/Data/Ref/",S,paste0(S,".gene.bed")),
+                header = FALSE,sep = "\t",stringsAsFactors = F)
+b$V6 %<>% gsub(" ","",.)
+gene$type = b[match(gene$name,b$V6),5]
+gene$ENSEMBl = b[match(gene$name,b$V6),4]
+gene = gene[grepl("pseudo",gene$type),]
+fwrite(gene,file = "~/Pseudo/Data/Seqdata/PacBio/mouse_pseudogene.IsoseqDetected.bed",col.names = FALSE,sep = "\t")
+
+gene$type %<>% gsub("transcribed_","",.) %>% gsub("translated_","",.) %>%
+    gsub(" ","",.) %>%
+    gsub("unitary_pseudogene","Unitary",.) %>% 
+    gsub("polymorphic_pseudogene","Polymorphic",.) %>% 
+    gsub("processed_pseudogene","Processed",.)
+gene[!gene$type %in% c("Unitary","Polymorphic","Processed"),"type"]="Unprocessed"
+freq = as.data.frame(table(gene$type))
+freq = freq[order(freq$Freq),]
+freq$Var1 %<>% factor(.,levels = c("Processed","Unprocessed","Unitary","Polymorphic"))
+ggplot(freq,aes(Var1,Freq))+geom_bar(stat = "identity",aes(fill=Var1))+
+  theme_classic()+ylab("Iso-seq detected pseudogenes")+
+  theme(panel.grid.major =element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(),
+        axis.title.x=element_blank(),
+        axis.text.x = element_text(size=16,angle = 45, hjust = 1, vjust = 1),
+        axis.title.y=element_text(size=18),
+        axis.text.y = element_text(size=16),
+        strip.text = element_text(size=18),
+        legend.position = "none")+
+  geom_text(aes(x,y,label =lab),
+            data = data.frame(x = 1:4,
+                              y = rev(freq$Freq)+5,
+                              lab = rev(freq$Freq)))+
+  scale_y_continuous(expand = c(0, 0),limits = c(0,126))+
+  #coord_flip()+
+  scale_fill_manual(values=c("#89c1e7","#5da495","#f7b6ae","#dfcbe2"))
+
+ggsave(filename = file.path("~/Pseudo/Result","Mouse","Picture",paste0(Num,"IsoseqDetected.pseudogene.type.pdf")),
+       device = "pdf",height = 5,width = 5)
+
+freq[freq$Var1=="Processed",2]/sum(freq$Freq)
+```
+
+
+```{r}
+if (FALSE) {
+  a = fread("~/Pseudo/Data/Seqdata/PacBio/mouse_pseudoExon.IsoseqExon.intersect.bed") %>% as.data.frame()
+length(unique(lapply(as.character(a$V4),function(x)(strsplit(x,":")[[1]][1])) %>% unlist()))
+b = tapply(a$V13, a$V4, max) %>% as.data.frame()
+b$gene = lapply(as.character(row.names(b)),function(x)(strsplit(x,":")[[1]][1])) %>% unlist()
+b$alllength = lapply(as.character(row.names(b)),function(x)(strsplit(x,":")[[1]][3])) %>% unlist() %>% as.numeric()
+
+prop = as.data.frame(tapply(b$., b$gene,sum)/tapply(b$alllength, b$gene,sum))
+colnames(prop) = "Proportion"
+
+S = "Mouse"
+c = read.csv(file.path("/home/qians/Pseudo/Data/Ref",S,paste0("gene",S,".bed")),
+                header = FALSE,sep = "\t",stringsAsFactors = F)
+prop$type = c[match(row.names(prop),c$V4),5]
+table(prop[grepl("pseudo",prop$type),1] >0.5)
+}
+```
+
+```{bash}
+cd ~/Pseudo/Data/Ref/Mouse
+grep transcribed Mouse.gene.bed | grep pseudo > Mouse.transcribed.pseudogene.bed
+
+```
+
+
+### Our data for IGV
+```{bash}
+cd /home/lchen/lnc_envolution/Illumina_result/ours/20210912/Mus_musculus
+for i in `ls *bam`; do echo -e "cd /home/lchen/lnc_envolution/Illumina_result/ours/20210912/Mus_musculus; samtools view -Sb $i -q 30 -@ 10 | samtools sort - -@ 10 -o ${i%bam}q30.sorted.bam" > ${i%bam}q30.pbs; done
+for i in `ls *q30.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+for i in `ls *q30.sorted.bam`; do echo -e "cd /home/lchen/lnc_envolution/Illumina_result/ours/20210912/Mus_musculus; samtools index -@ 10 $i" > ${i%bam}index.pbs; done
+for i in `ls *.q30.sorted.index.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+for i in `ls *q30.sorted.bam`; do echo -e "cd /home/lchen/lnc_envolution/Illumina_result/ours/20210912/Mus_musculus; bamCoverage -b $i -bs 10 -p 10 --normalizeUsing RPKM -o ${i%bam}bw" > ${i%bam}bw.pbs; done
+for i in `ls *q30.sorted.bw.pbs`; do qsub -q batch -V -l nodes=1:ppn=10 $i; done
+
+awk -F "\t" '{print "mv"" "$1".q30.sorted.bw"" "" "$2".q30.sorted.bw"}' mouse_seqinfor.txt > change.name.sh
+
+```
+
+### Ribo-seq
+```{bash}
+cd /NAS/qians/Pseudogene/Data
+for i in `ls *bam`; do bamCoverage -b $i -bs 10 -p 10 --normalizeUsing RPKM -o ${i%bam}bw; done
+
+```
+
