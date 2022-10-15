@@ -1,0 +1,165 @@
+---
+title: "Untitled"
+author: "qians"
+date: "2021"
+output: html_document
+---
+
+# intersect
+```{bash}
+#Ref: 
+#oRNAment: a database of putative RNA binding protein target sites in the transcriptomes of model species
+#REPIC: a database for exploring the N6-methyladenosine methylome
+
+#RBP
+cd ~/Pseudo/Data/Seqdata/PTregulation
+wget http://rnabiology.ircm.qc.ca/BIF/oRNAment/static/Homo_sapiens_oRNAment.bed.tar.gz
+tar -zxvf Homo_sapiens_oRNAment.bed.tar.gz
+cd ~/Pseudo/Data/Seqdata/PTregulation/HS
+zcat *bed.gz >> All.RBP.bed
+sed 's/^/chr/g' ~/Pseudo/Data/Ref/Human/geneHuman.bed | bedtools intersect -a - -b All.RBP.bed -wa -wb > ~/Pseudo/Result/PTregulation/geneHuman.RBPnumber.bed
+sed 's/^/chr/g' ~/Pseudo/Data/Ref/Human/Human.intergenic.Gene.frompseudo.seed100.bed | bedtools intersect -a - -b All.RBP.bed -c > ~/Pseudo/Result/PTregulation/Human.intergenic.Gene.frompseudo.seed100.RBPnumber.bed
+sed 's/^/chr/g' ~/Pseudo/Data/Ref/Human/Human.intergenic.Gene.frompseudo.seed100.bed | bedtools intersect -a - -b All.RBP.bed -wa -wb > ~/Pseudo/Result/PTregulation/Human.intergenic.Gene.frompseudo.seed100.RBPtype.bed
+
+#m6A
+wget https://repicmod.uchicago.edu/repic/data/download/m6A=sites=species=human=hg38.txt.gz
+cd ~/Pseudo/Data/Seqdata/PTregulation/
+sed '1d' m6A=sites=species=human=hg38.txt |awk -F "\t" '{print $1"\t"$4}' | sed 's/:/\t/g' | sed 's/\[+\]//g' | sed 's/\[-\]//g' | sed 's/\[.\]//g' | sed 's/-/\t/g' | sort -k1,1 -k2,2n | uniq | grep -v chrM | ~/Biosoft/bedtools2/bin/bedtools merge -i - -c 4 -o mean > hg38.m6A.bedGraph
+/home/qian/source/bedGraphToBigWig hg38.m6A.bedGraph ~/Pseudo/Data/Ref/Human/Human.chrlength hg38.m6A.bw
+sed 's/^/chr/g' ~/Pseudo/Data/Ref/Human/geneHuman.bed | bedtools intersect -a - -b hg38.m6A.bedGraph -wa -wb > ~/Pseudo/Result/PTregulation/geneHuman.m6Anumber.bed
+sed 's/^/chr/g' ~/Pseudo/Data/Ref/Human/Human.intergenic.frompseudo.seed100.bed | bedtools intersect -a - -b hg38.m6A.bedGraph -wa -wb > ~/Pseudo/Result/PTregulation/Human.intergenic.frompseudo.seed100.m6A.bed
+
+##profile
+###--- discard
+computeMatrix reference-point -S ~/Pseudo/Data/Seqdata/PTregulation/hg38.m6A.bw -R ~/Pseudo/Data/Ref/Human/Human.TSS.Coding.bed ~/Pseudo/Data/Ref/Human/Human.TSS.DynamicPseu.bed ~/Pseudo/Data/Ref/Human/Human.TSS.NodynamicPseu.bed  ~/Pseudo/Data/Ref/Human/Human.TSS.Random.bed -b 5000 -a 5000 -o m6A.matrix2.gz
+plotProfile -m m6A.matrix2.gz -o m6A.matrix2.pdf --plotFileFormat pdf
+###---
+cd ~/Pseudo/Result/PTregulation
+bedtools closest -a ~/Pseudo/Data/Ref/Human/Human.TSS.Coding.bed -b ~/Pseudo/Data/Seqdata/PTregulation/hg38.m6A.bedGraph -d > Human.TSS.Coding.m6aDis.bed
+for i in `ls ~/Pseudo/Data/Ref/Human/Human.TSS.*.bed`; do j=`basename $i`; bedtools closest -a $i -b ~/Pseudo/Data/Seqdata/PTregulation/hg38.m6A.bedGraph -D ref > ${j%bed}m6aDis.bed; done
+
+```
+
+# Visualization
+## RNA Binding Protein
+```{r}
+rm(list = ls())
+Num = "013.1."
+a = fread("~/Pseudo/Result/PTregulation/geneHuman.RBPnumber.bed") %>% as.data.frame()
+freq = dplyr::distinct(a,V4,V11)
+freq = table(freq$V4) %>% as.data.frame()
+freq$type = a[match(freq$Var1,a$V4),5]
+freq %<>% dplyr::filter(.,grepl("protein_coding|pseudogene|lncRNA",type,ignore.case = T))
+freq[grepl("protein_coding",freq$type),"type"]="Coding"
+freq[grepl("pseudogene",freq$type),"type"]="Non-dynamic\npseudogene"
+ddg = fread("~/Pseudo/Result/Human/Savedata/DDG/all.ddg.csv",header = FALSE) %>% as.data.frame()
+freq[freq$Var1 %in% ddg$V1,"type"] = "Dynamic\npseudogene"
+
+random = fread("~/Pseudo/Result/PTregulation/Human.intergenic.Gene.frompseudo.seed100.RBPnumber.bed") %>% as.data.frame()
+random %<>% dplyr::distinct(.,V4,V8)
+
+#random = table(random$V4) %>% as.data.frame()
+random$type = "Intergenic"
+colnames(random) = colnames(freq)
+freq = rbind(freq,random)
+my_comparisons <- list(c("Coding","lncRNA"),
+                       c("lncRNA","Dynamic\npseudogene"),
+                       c("Dynamic\npseudogene","Non-dynamic\npseudogene"),
+                       c("Non-dynamic\npseudogene","Intergenic"))
+freq$type %<>% factor(.,levels = c("Coding","lncRNA","Dynamic\npseudogene","Non-dynamic\npseudogene","Intergenic"))
+ggplot(freq,aes(type,Freq))+geom_boxplot(aes(fill=type),outlier.color = "white",notch = T)+
+  theme_classic()+ylab("Diversity of RBP")+
+      theme(axis.title.x=element_blank(),legend.position='none',
+            axis.text.x = element_text(size=12,angle = 45, hjust = 1, vjust = 1),
+            axis.title.y=element_text(size=14),axis.text.y = element_text(size=12))+
+  #coord_cartesian(ylim = c(0,2))+
+  scale_fill_manual(values = c("#d95f0d","#9ecae1","#61439A","#4F69B5","#862461"))+
+  stat_compare_means(comparisons = my_comparisons,label.y = c(240,230,220,210),tip.length = 0.015)
+ggsave(filename = file.path("~/Pseudo/Result/PTregulation/Picture",paste0(Num,"DiversityRBP.type.pdf")),
+             device = "pdf",width = 6,height = 5)
+```
+
+
+
+## m6A
+```{r}
+rm(list = ls())
+Num = "013.1."
+a = fread("~/Pseudo/Result/PTregulation/geneHuman.m6Anumber.bed") %>% as.data.frame()
+a %<>% dplyr::filter(.,grepl("protein_coding|pseudogene|lncRNA",V5,ignore.case = T))
+a[grepl("protein_coding",a$V5),"V5"]="Coding"
+a[grepl("pseudogene",a$V5),"V5"]="Non-dynamic\npseudogene"
+freq = tapply(a$V11, a$V4, max) %>% as.data.frame()
+freq$type = a[match(row.names(freq),a$V4),5]
+
+ddg = fread("~/Pseudo/Result/Human/Savedata/DDG/all.ddg.csv",header = FALSE) %>% as.data.frame()
+freq[row.names(freq) %in% ddg$V1,"type"] = "Dynamic\npseudogene"
+
+random = fread("~/Pseudo/Result/PTregulation/Human.intergenic.frompseudo.seed100.m6A.bed") %>% as.data.frame()
+random = tapply(random$V8, random$V4, max) %>% as.data.frame()
+random$type = "Intergenic"
+freq = rbind(freq,random)
+my_comparisons <- list(c("Coding","lncRNA"),
+                         c("lncRNA","Dynamic\npseudogene"),
+                           c("Dynamic\npseudogene","Non-dynamic\npseudogene"),
+                           c("Non-dynamic\npseudogene","Intergenic"))
+freq$type %<>% factor(.,levels = c("Coding","lncRNA","Dynamic\npseudogene","Non-dynamic\npseudogene","Intergenic"))
+ggplot(freq,aes(type,log10(.)))+geom_boxplot(aes(fill=type),outlier.color = "white",notch = T)+
+  theme_classic()+ylab("m6A enrichment")+
+      theme(axis.title.x=element_blank(),legend.position='none',
+            axis.text.x = element_text(size=12,angle = 45, hjust = 1, vjust = 1),
+            axis.title.y=element_text(size=14),axis.text.y = element_text(size=12))+
+  coord_cartesian(ylim = c(0,2))+
+  scale_fill_manual(values = c("#d95f0d","#9ecae1","#61439A","#4F69B5","#862461"))+
+  stat_compare_means(comparisons = my_comparisons,label.y = c(1.85,1.75,1.65,1.55),tip.length = 0.015)
+ggsave(filename = file.path("~/Pseudo/Result/PTregulation/Picture",paste0(Num,"m6Aenrichment.type.pdf")),
+             device = "pdf",width = 5,height = 4)
+  
+```
+
+### Profile 
+```{r}
+rm(list = ls());gc();rm(list = ls())
+Num = "013.1."
+
+cod = fread("~/Pseudo/Result/PTregulation/Human.TSS.Coding.m6aDis.bed") %>% as.data.frame()
+lnc = fread("~/Pseudo/Result/PTregulation/Human.TSS.lncRNA.m6aDis.bed") %>% as.data.frame()
+Dyna = fread("~/Pseudo/Result/PTregulation/Human.TSS.DynamicPseu.m6aDis.bed") %>% as.data.frame()
+Nody = fread("~/Pseudo/Result/PTregulation/Human.TSS.NodynamicPseu.m6aDis.bed") %>% as.data.frame()
+Random = fread("~/Pseudo/Result/PTregulation/Human.TSS.Random.m6aDis.bed") %>% as.data.frame()
+Random = Random[,c(1:7,10)]
+
+cod$type = "Coding"
+lnc$type = "lncRNA"
+Dyna$type = "Dynamic"
+Nody$type = "Non-dynamic"
+Random$type = "Shuffled"
+colnames(Random) = colnames(cod)
+df = rbind(cod,lnc,Dyna,Nody,Random)
+for (i in 1:nrow(df)) {
+  if (df[i,8]>=0) {
+    df[i,8] = log10(df[i,8]+1)
+  }else{
+    df[i,8] = -log10(-df[i,8]+1)
+  }
+}
+df$type %<>% factor(.,levels = c("Coding","lncRNA","Dynamic","Non-dynamic","Shuffled"))
+ggplot(df,aes(V8))+#stat_ecdf(aes(color=type))
+  geom_density(aes(color=type),adjust=5)+theme_classic()+
+  xlab("Distance to m6A sites")+ylab("Density")+
+  theme(legend.title = element_blank(),
+        #legend.position=c(0.8,0.85),legend.background = element_blank(),legend.key.size = unit(0.3,"cm"),
+        axis.title.x=element_text(size=12),axis.text.x = element_text(size=10,angle = 45, hjust = 1, vjust = 1),
+        axis.title.y=element_text(size=12),axis.text.y = element_text(size=10))+
+   scale_color_manual(values = c("#d95f0d","#9ecae1","#61439A","#4F69B5","#862461"))+
+  #scale_color_manual(values = c("#EE1F26","#61439A","#4F69B5","#862461"))+
+  scale_x_continuous(limits = c(-10,10),expand = c(0,0),
+                     breaks = seq(-10,10,5),labels = c("-10,000","-5,000","0","5,000","10,000"))+
+  #seq(-10,10,2),labels = seq(-10,10,2)*1000
+  guides(tittle=FALSE)+
+  geom_vline(xintercept = 0,color="grey",size=0.3)
+ggsave(filename = file.path(paste0("~/Pseudo/Result/PTregulation/Picture/",Num,"Profile.m6A.type5.pdf")),
+       device = "pdf",width = 3.7, height = 4)
+```
+
+

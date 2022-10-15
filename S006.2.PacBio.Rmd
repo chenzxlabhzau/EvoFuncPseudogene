@@ -1,0 +1,160 @@
+---
+title: "PacBio"
+author: "qians"
+date: "2021.05.14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1.Compare transcript length
+```{bash}
+cd /home/qians/Pseudo/Data/Seqdata/PacBio
+cp /home/chenll/lncRNA_evolution/2020/annotation/comparison/structure/transcript/loci/mouse_* ./
+```
+
+```{r}
+rm(list = ls());gc();rm(list = ls())
+Num = "S006."
+library(ggplotify)
+library(eoffice)
+ref = fread("~/Pseudo/Data/Seqdata/PacBio/mouse_reference_exon.bed") %>% as.data.frame()
+ref$len = ref$V3 - ref$V2 
+pb = fread("~/Pseudo/Data/Seqdata/PacBio/mouse_final_exon.bed") %>% as.data.frame()
+pb$len = pb$V3 - pb$V2
+
+reflen = tapply(ref$len, ref$V4, sum) %>% as.data.frame()
+reflen$type = "Reference"
+pblen = tapply(pb$len, pb$V4, sum) %>% as.data.frame()
+pblen$type = "PacBio"
+df = rbind(reflen,pblen)
+my_comparisons = list(c("Reference","Iso-seq"))
+p = ggplot(df,aes(type,log10(.)))+geom_boxplot(aes(fill=type),outlier.color = "white",notch = T)+
+      theme_classic()+ylab("Transcript length (log10)")+
+      theme(axis.title.x=element_blank(),legend.position='none',
+            axis.text.x = element_text(size=12,angle = 45, hjust = 1, vjust = 1),
+            axis.title.y=element_text(size=14),axis.text.y = element_text(size=12))+
+  annotate("text", x = 1.5, y = 4.57,  label = "P< 2.2e-16")+
+  geom_segment(aes(y=4.46, x=1, yend=4.49, xend=1),size=0.1)+
+  geom_segment(aes(y=4.46, x=2, yend=4.49, xend=2),size=0.1)+
+  geom_segment(aes(y=4.49, x=1, yend=4.49, xend=2),size=0.1)+
+  stat_compare_means(comparisons = my_comparisons) +
+  coord_cartesian(ylim = c(1.7,4.5))+
+  scale_fill_manual(values = c("#B00237","#FAC3D2"))
+ggsave(paste0("/home/qians/Pseudo/Result/PacBio/Picture/",Num,"Transcript.Length.pdf"),p, 
+       device = "pdf",width = 2.5,height = 4)
+
+p = ggplot(df,aes(type,log10(.)))+geom_boxplot(aes(fill=type),outlier.color = "white",notch = T)+
+  theme_classic()+ylab("Transcript length (log10)")+
+  theme(axis.title.y=element_blank(),legend.position='none',
+        axis.text.y = element_text(size=12,color="black"),
+        axis.title.x=element_text(size=14),axis.text.x = element_text(size=12))+
+  #stat_compare_means(comparisons = my_comparisons)+
+  annotate("text", x = 1.5, y = 4.57,  label = "P< 2.2e-16",vjust=0.5,hjust=0.5,angle=270)+
+  geom_segment(aes(y=4.46, x=1, yend=4.49, xend=1),size=0.1)+
+  geom_segment(aes(y=4.46, x=2, yend=4.49, xend=2),size=0.1)+
+  geom_segment(aes(y=4.49, x=1, yend=4.49, xend=2),size=0.1)+
+  scale_fill_manual(values = c("#B00237","#FAC3D2"))+
+  coord_flip(ylim = c(1.7,4.5))
+topptx(p+coord_flip(ylim = c(1.7,4.5)),filename = paste0("/home/qians/Pseudo/Result/PacBio/Picture/",Num,"Transcript.Length.pptx"),
+           width = 5,height = 1.5)
+ggsave(p, paste0("/home/qians/Pseudo/Result/PacBio/Picture/",Num,"Transcript.Length.pdf"),
+       device = "pdf",width = 5,height = 1.5)
+```
+
+
+## 2.Bam to bw for IGV
+```{bash}
+#qsub -I -l nodes=comput04:ppn=28
+cd /home/lchen/lnc_envolution/Illumina_result/20191111/alignment/rmRNA_mapping/mouse/bam/
+
+samtools view -q 30 -b female_brain_01.bam > female_brain_01.q30.bam
+for i in `ls *bam| grep -v female_brain_01`; do echo "nohup samtools view -q 30 -b $i | samtools sort -t - -o ${i%bam}q30.bam &"; done > UniqueMap.sh
+samtools index *q30.bam
+ls *brain*q30* | sed 's/ /\n/g' > brain.txt
+samtools merge -b brain.txt Brain.q30.bam
+
+for i in cerebellum heart intestine; do ls *$i*q30* > $i.txt; done
+samtools merge -b cerebellum.txt Cerebellum.q30.bam -@ 10
+samtools merge -b heart.txt Heart.q30.bam -@ 10
+samtools merge -b intestine.txt Intestine.q30.bam -@ 10
+
+ls female_gonad_0*.q30.bam > Ovary.txt
+samtools merge -b Ovary.txt Ovary.q30.bam -@ 10
+
+ls male_gonad_0*.q30.bam > Testis.txt
+samtools merge -b Testis.txt Testis.q30.bam -@ 10
+
+echo "bamCoverage --bam Brain.q30.bam -o Brain.q30.bw -p 10" >tmp.pbs
+qsub -q batch tmp.pbs -l nodes=1:ppn=10
+
+#index
+for i in Brain Cerebellum Heart Intestine Ovary Testis; do echo "samtools index /home/lchen/lnc_envolution/Illumina_result/20191111/alignment/rmRNA_mapping/mouse/bam/${i}.q30.bam -@ 10" > $i.pbs; done
+for i in Cerebellum Heart Intestine Ovary Testis; do echo "qsub -q batch $i.pbs -l nodes=1:ppn=10"; done
+
+for i in Brain Cerebellum Heart Intestine Ovary Testis; do echo "bamCoverage --bam /home/lchen/lnc_envolution/Illumina_result/20191111/alignment/rmRNA_mapping/mouse/bam/${i}.q30.bam -o /home/lchen/lnc_envolution/Illumina_result/20191111/alignment/rmRNA_mapping/mouse/bam/${i}.q30.bw -p 10" > $i.pbs; done
+#qsub -q batch Brain.pbs -l nodes=1:ppn=10
+for i in Cerebellum Heart Intestine Ovary Testis; do echo "qsub -q batch $i.pbs -l nodes=1:ppn=10"; done
+```
+
+## 3.Merge count file
+### Merge
+```{r eval=FALSE}
+rm(list = ls());gc();rm(list = ls())
+
+dir = file.path("~/Pseudo/Data/Seqdata/Illumina/Mouse/NewCount/test/")
+Files = grep("count$",list.files(dir),value=TRUE)
+filePath <- sapply(Files,function(x){paste(dir,x,sep='/')})
+data <- lapply(filePath, function(x){ fread(x, header=T,sep = "\t")})
+a = data[[1]] %>% as.data.frame()
+a = a[,c(1,ncol(a))]
+colnames(a)[2] %<>% lapply(., function(x)strsplit(x,"/",fixed=T)[[1]][7]) %>% 
+  unlist() %>% gsub(".bam","",.)
+  
+for (i in 2:length(data)) {
+  b <- data[[i]] %>% as.data.frame()
+  b = b[,c(1,ncol(b))]
+  colnames(b)[2] %<>% lapply(., function(x)strsplit(x,"/",fixed=T)[[1]][7]) %>% 
+    unlist() %>% gsub(".bam","",.)
+  a <- merge(a,b,by="Geneid")
+}
+row.names(a) = a$Geneid
+a = a[,-1]
+fwrite(a,file = "~/Pseudo/Result/PacBio/Savedata/Pacbio.Mergecount2.txt",
+       col.names = TRUE,row.names = TRUE, quote = FALSE,sep = "\t")
+```
+### FPKM
+```{bash}
+cd ~/Pseudo/Result/PacBio/Savedata
+awk -F "\t" '$3=="exon" {print $0}' mouse_final.gtf | awk -F ";" '{print $1}'| sed 's/gene_id //g' | sed 's/"//g' | awk -F "\t" '{print $9"chr"$1"\t"$4"\t"$5}' | bedtools sort -i - | bedtools merge -i - | sed 's/chr/\t/g'| awk -F "\t" '{print $2"\t"$3"\t"$4"\t"$1"\t"$4-$3}' > Mouse.nonreExonlength.PacBio.bed
+```
+
+```{r}
+rm(list = ls());gc();rm(list = ls())
+a = fread("~/Pseudo/Result/PacBio/Savedata/Pacbio.Mergecount.txt") %>% as.data.frame()
+row.names(a) = a$V1
+a = a[,-1]
+exonlen = fread("~/Pseudo/Result/PacBio/Savedata/Mouse.nonreExonlength.PacBio.bed") %>% as.data.frame()
+genelen = tapply(exonlen$V5, exonlen$V4, sum) %>% as.data.frame()
+a$length = genelen[match(row.names(a),row.names(genelen)),1]
+
+totalcounts <- colSums(a[,-ncol(a)])
+rpkm <- t(do.call(rbind, lapply(1:length(totalcounts), function(i){
+  10^9*a[,i]/a$length/totalcounts[i]}))) %>% as.data.frame()
+row.names(rpkm) = row.names(a)
+colnames(rpkm) = colnames(a)[1:(ncol(a)-1)]
+      
+
+convert = fread("/NAS/qians/geo_submission/mouse_reference_iso.txt",
+                header = FALSE) %>% as.data.frame()
+
+a1 = a[grepl("ENSMUSG",a$Geneid),]
+a2 = a[grepl("PB",a$Geneid),]
+a2$tmp = convert[match(a2$Geneid,convert$V2),1]
+  
+tmp = a[grepl("PB",a$Geneid),]
+```
+
+

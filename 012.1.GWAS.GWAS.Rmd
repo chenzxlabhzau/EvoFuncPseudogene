@@ -1,0 +1,57 @@
+---
+title: "Untitled"
+author: "qians"
+date: "2021"
+output: html_document
+---
+
+```{bash}
+#From https://www.ebi.ac.uk/gwas/docs/file-downloads
+cd ~/Pseudo/Data/Seqdata/GWAS
+awk -F "-" '{print $1"\t"$0}' gwas_catalog_v1.0-associations_e100_r2021-02-25.tsv | sed '1d' | awk -F "\t" '$1<2016 {print $13"."$14}' | sort| uniq|wc -l #check 2015 nature genetics:The landscape of long noncoding RNAs in the human transcriptome
+awk -F "\t" '{print $12"\t"$13"\t"$13+1}' gwas_catalog_v1.0-associations_e100_r2021-02-25.tsv | grep -vE "x|;" | grep -v "^$" | sed '1d' > GWAS.bed
+#Gene body
+bedtools intersect -a ~/Pseudo/Data/Ref/Human/geneHuman.bed -b GWAS.bed -c > GWAS.gene.bed
+#Exon
+bedtools intersect -a ~/Pseudo/Data/Ref/Human/Human.nonreExonlength.bed -b GWAS.bed -c > GWAS.exon.bed
+#Promoter but in gene body
+bedtools intersect -a ~/Pseudo/Data/Ref/Human/geneHuman.bed -b GWAS.bed -wa -wb | awk -F "\t" '{print $8"\t"$9"\t"$10}' > GWAS.gene.wb.bed
+sed 's/chr//g' ~/Pseudo/Data/Ref/Human/Human.promoter.bed | bedtools intersect -a - -b GWAS.gene.wb.bed  -c > GWAS.promoter.wb.bed
+```
+
+
+```{r}
+#Gene Body
+rm(list = ls());gc();rm(list = ls())
+Num = "012.1."
+gene = fread("~/Pseudo/Data/Seqdata/GWAS/GWAS.gene.bed") %>% as.data.frame()
+gene %<>% dplyr::filter(.,grepl("pseudogene|protein_coding|lncRNA",V5,ignore.case = T))
+gene[gene$V5!="protein_coding"&gene$V5!="lncRNA","V5"] = "Pseudogene"
+tapply(gene$V8, gene$V5, sum)
+
+b = fread("~/Pseudo/Data/Ref/Human/geneHuman.bed") %>% as.data.frame()
+b$length = b$V3 - b$V2
+gene$length = b[match(gene$V4,b$V4),"length"]
+
+#Exon
+exon = fread("~/Pseudo/Data/Seqdata/GWAS/GWAS.exon.bed") %>% as.data.frame()
+#exon$gene = lapply(exon$V4,function(x)strsplit(x,split = ":",fixed = TRUE)[[1]][1]) %>% unlist()
+exon$type = b[match(exon$V4,b$V4),5]
+exon %<>% dplyr::filter(.,grepl("pseudogene|protein_coding|lncRNA",type,ignore.case = T))
+exon[exon$type!="protein_coding"&exon$type!="lncRNA","type"] = "Pseudogene"
+tapply(exon$V6, exon$type, sum)
+
+#Promoter but in gene body
+promoter = fread("~/Pseudo/Data/Seqdata/GWAS/GWAS.promoter.wb.bed") %>% as.data.frame()
+promoter$type = b[match(promoter$V4,b$V4),5]
+promoter %<>% dplyr::filter(.,grepl("pseudogene|protein_coding|lncRNA",type,ignore.case = T))
+promoter[promoter$type!="protein_coding"&promoter$type!="lncRNA","type"] = "Pseudogene"
+tapply(promoter$V6, promoter$type, sum)
+
+#Dynamic Pseudo
+ddg = fread("~/Pseudo/Result/Human/Savedata/DDG/all.ddg.csv",header = FALSE) %>% as.data.frame()
+gene[gene$V4 %in% ddg$V1, 5] = "Dynamic"
+table(gene[gene$V8>0,5])/table(gene$V5)
+
+```
+
